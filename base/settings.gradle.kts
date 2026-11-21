@@ -38,3 +38,5 @@ include(":api-ytmusic")
 include(":wear")
 include(":pass")
 include(":desktop")
+// Shared Immersive UI (Android + desktop). See ../DESKTOP.md.
+include(":immersive")

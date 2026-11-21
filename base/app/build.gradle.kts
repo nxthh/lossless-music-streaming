@@ -148,6 +148,8 @@ android {
 
 dependencies {
     implementation(project(":host-android"))
+    // The Immersive UI shared with the desktop app (being moved out of this module, see ../DESKTOP.md).
+    implementation(project(":immersive"))
     // YouTube Music as the account provider (listen sync, library read, metadata on the user's session).
     implementation(project(":api-ytmusic"))
     // The watch's app asks this one for the account's session and playlists (WearLinkService).

@@ -43,7 +43,7 @@ import com.music.spotui.ui.screens.LibraryScreen
 import com.music.spotui.ui.screens.ShowScreen
 import com.music.spotui.ui.screens.QueueScreen
 import com.music.spotui.ui.screens.SearchScreen
-import com.music.spotui.ui.immersive.motion.ImmersiveMotion.Pages as IPages
+import com.music.spotui.ui.immersive.motion.ImmersivePages as IPages
 import com.music.spotui.ui.immersive.motion.ImmersiveMotion.PageFade as IFade
 
 @Composable

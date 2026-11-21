@@ -1,0 +1,1343 @@
+
+--- a/DESKTOP.md	1970-01-01 00:00:00.000000000 +0000
++++ b/DESKTOP.md	2026-11-21 10:12:22.984123194 +0000
+@@ -0,0 +1,181 @@
++# Orpheon desktop: bringing the Immersive UI to Windows and Linux
++
++Part of Orpheon (https://github.com/kota-zo/Orpheon), GPL-3.0. Origin: Myspoti. Keep the license
++headers and the BitChord attributions already at the top of some Immersive files.
++
++**This file is the handoff.** Any agent (or person) should be able to continue from it alone.
++Read "Status" and "Next action" first, do the next action, then update both before stopping.
++
++---
++
++## Goal and decision
++
++The desktop app (`:desktop`, Compose Multiplatform Desktop, libVLC playback) must look and behave
++like the Android **Immersive** look. Decision (taken with the owner): **reuse the Android Immersive
++code, do not recreate it.** It is already responsive (`WindowSize`: two-pane players, side rail,
++one-row chrome, grid columns, page-width cap, mouse right-click), so the layouts carry over. What
++does not carry over is where the code lives and what it calls.
++
++Why it cannot simply be used in place: it is in `:app` (an Android *application* module). `:desktop`
++is a plain JVM module and cannot depend on it. So the code moves into a shared Compose
++Multiplatform module, **`:immersive`**, that both `:app` and `:desktop` use. One source of truth.
++
++## Hard rules for whoever works on this
++
++1. **Android must keep building after every step.** Each step is small and self-contained.
++2. **Keep package names unchanged** (`com.music.spotui.ui.immersive.*`, etc.) when moving files, so
++   importers in `:app` do not change. Rename packages only as a separate, final cleanup.
++3. Move with `git mv` so history follows. Do not commit unless the owner asks.
++4. Moving a file across a module boundary breaks `internal`: anything `internal` that `:app` (or a
++   test) still uses must become public in the same step.
++5. `commonMain` has no `java.*`, `android.*`, `org.intellij.*` (`@Language`), `androidx.core`,
++   `androidx.activity`, Glide, or `R`. Put platform code behind `expect`/`actual` (androidMain /
++   desktopMain) or behind an interface passed in.
++6. Screens must end up taking **plain state plus callbacks**, not `Graph`, `SongPlayer`, ViewModels
++   or `Context`. `ui/immersive/player/PlayerBridge.kt` + `ImmersivePlayerState` already work this
++   way (shape adapted from BitChord's shared UI): copy that pattern.
++7. **Agent sandboxes usually cannot build this project** (no Maven/Google repositories, no Android
++   SDK). Everything below marked *unverified* was written without a compiler. The first thing a
++   person with a toolchain should run is in "Verify".
++8. Never apply `git stash`/reset over `base/desktop/` or `base/settings.gradle.kts`: they were
++   uncommitted work when this started.
++
++## Verify (run these; they are the definition of "step done")
++
++```
++cd base
++./gradlew :immersive:compileKotlinDesktop      # commonMain + desktopMain compile
++./gradlew :app:compileDebugKotlin              # Android still compiles with the moved files
++./gradlew :app:testDebugUnitTest               # includes the Roborazzi immersive screenshot tests
++./gradlew :desktop:compileKotlin               # once :desktop depends on :immersive
++./gradlew :desktop:run                         # needs VLC installed
++```
++
++If `:immersive` fails at configuration with *plugin not found / not applicable*: see "Build wiring".
++
++## Where things are (measured, not guessed)
++
++- Immersive code: `base/app/src/main/java/com/music/spotui/ui/immersive/` (95 files, 24.7k lines)
++  plus `radio/ui/ImmersiveLiveRadioScreen.kt`. Strings: `res/values*/immersive_*_strings.xml`.
++- It reaches back into the app: 836 imports of `com.music.spotui.*` (ui.immersive itself 389,
++  ui.screens 96, data 95, ui.components 88, ui.navigation 50, di 50, ui.look 45, ui.viewmodel 12,
++  extensions 11). Direct `android.*` use is light (21 files); the real coupling is the singletons.
++- Desktop today (`base/desktop`): a plain Material shell (search / queue / extensions) over the real
++  `DesktopPlayer`, catalog and extensions. Its `Main.kt` says the Immersive screens replace it.
++- The desktop speaks `:api` models (`Track`, `Album`, `NowPlaying`); the Immersive screens speak
++  `data.entity.*` (`SongsModel`, `AlbumsModel`, ...: 12 pure-Kotlin files, ~420 lines).
++
++Re-measure any time: `python3 tools/desktop-port/portability.py` (add `--movable`).
++**Pessimistic** (identifier matching over-links). A "blocked" file may be fine; check by hand.
++
++### Blockers, with how many Immersive files each affects (direct imports)
++
++| Blocker | Files | Plan (seam) |
++|---|---|---|
++| `app.myspoti.engine.R` (Android string resources) | 46 | Compose Multiplatform resources (`composeResources/values*/strings.xml`), `stringResource(Res.string.x)`. French files `values-fr/immersive_*_strings.xml` exist: carry them over. Strings shared with Classic need to stay available to `:app` too. |
++| `com.bumptech.glide` (`GlideImage`) | 23 | One `expect/actual` cover-image composable. Android actual keeps Glide (same behaviour); desktop actual uses Coil 3 (+ OkHttp) or a small own loader. |
++| `androidx.navigation.NavController` | 30 | JetBrains `navigation-compose` (same API on desktop). `ui/navigation/Routes.kt` + route helpers (955 lines) move too. |
++| `androidx.lifecycle.viewmodel` | 12 | KMP lifecycle-viewmodel-compose. ViewModels (1088 lines) read `Graph.repository`: give them an interface. `PlayerViewModel` uses Android APIs. |
++| `di.SongPlayer` | 21 | `PlayerHost` interface (state flows + actions). Android implements it with `SongPlayer`, desktop with `DesktopPlayer`. Start from `ImmersivePlayerState`. |
++| `di.Graph` | 11 | An `ImmersiveServices` CompositionLocal (repository, profile, features). |
++| `di.Haptics` | 11 | `LocalHaptics` (desktop: no-op). |
++| `android.os.Build` | 8 | `PlatformCaps` (`supportsRuntimeShader`, ...), expect/actual. |
++| `app.myspoti.host.android.MyspotiRuntime` | 8 | Inspect per use; mostly app context for strings/prefs: becomes part of `ImmersiveServices`. |
++| `android.widget.Toast` | 5 | `LocalToaster` (desktop: snackbar). |
++| `android.content.Intent` / `net.Uri` / share / open-link | ~8 | `PlatformActions` (openUrl, share, ...). |
++| `androidx.activity.compose.BackHandler` | 4 | expect/actual (CMP also ships a common BackHandler: verify availability for the version in use). |
++| `ui.components.*`, `ui.look.*` helpers (`WindowSize`, `rememberReduceMotion`, `secondaryClick`, `FastScrollbar`, `pressHint`, `imageUrlOf`, `titleMarquee`, fonts `ImmersiveSans`/`ImmersiveDisplay`, ...) | ~130 imports | Move the ones Immersive uses into `:immersive`. `WindowSize` reads `LocalConfiguration` (Android): switch to `LocalWindowInfo.containerSize` (common) or expect/actual. |
++| `data.entity.*` models | ~35 | Move the 12 files into `:immersive`; on desktop map `:api` `Track/Album/...` to them (adapter next to `DesktopApi`). |
++| `java.*`, `android.icu`, `@Language` | ~6 files | `kotlinx-datetime` / expect-actual formatting; drop `@Language` annotations. |
++| Liquid-glass shaders: `shell/backdrop/Platform.kt`, `RuntimeShader.kt`, `internal/RenderEffect.kt`, `internal/Paint.kt` (`android.graphics.RuntimeShader`, `RenderEffect`, `BlurMaskFilter`, `SystemClock`) | 5 | expect/actual. Desktop first runs the **Haze** fallback (`ImmersiveHaze.kt`, and the `LiquidGlassPref` switch) with `supportsRuntimeShader = false`; a Skia `RuntimeEffect` (SkSL, close to AGSL) version can come later. |
++
++## Target architecture
++
++```
++:immersive   (Kotlin Multiplatform: commonMain + androidMain + desktopMain)
++   theme, glass shell/backdrop, components, sheets, pages, screens (plain state + callbacks),
++   ports: PlayerHost, ImmersiveServices, LocalHaptics, LocalToaster, PlatformActions, PlatformCaps,
++   models (data.entity), navigation routes
++:app         depends on :immersive; implements the ports with SongPlayer/Graph/Toast/Intent/...
++:desktop     depends on :immersive; implements the ports with DesktopPlayer/DesktopApi/...
++```
++
++## Milestones (do in order; each leaves Android building)
++
++- **M0 Scaffold the module and move the files that are already self-contained.**
++- **M1 Foundation.** `ImmersiveTheme` (+ fonts from `ui.look`), `ImmersiveMotion` (`rememberReduceMotion`),
++  `WindowSize`, `secondaryClick`, `ImmersiveClickable`. Small, few blockers each.
++- **M2 Glass cluster** (`shell/backdrop/**`, `ImmersiveGlass`, `GlassSelectionPill`, `FloatingTabBar`,
++  `ImmersiveHaze`: about 28 files in one dependency cycle, so they move together). Only ~5 files have
++  real Android calls (see table). `ImmersiveGlass` must take the liquid-glass setting as a parameter
++  instead of reading `LiquidGlassPref`.
++- **M3 Resources and images.** Strings to CMP resources; the cover-image seam (Glide / Coil).
++- **M4 Ports and models.** Define the ports; move `data.entity`; adapters on both sides; convert
++  the player (`ImmersivePlayer`, `PlayerControls`, `ImmersiveMiniPlayer`, lyrics/queue panels).
++- **M5 Shell and first screens:** `ImmersiveChrome`/tab bar/top bar + navigation, Home, Search, Queue.
++- **M6 Desktop wiring.** `:desktop` depends on `:immersive`, `Main.kt` swaps its Material shell for the
++  Immersive one, keyboard/mouse polish (media keys, window resize, right-click already exists).
++- **M7 Remaining screens** (library, artist, album/context, podcast, settings, extensions, equalizer, ...).
++
++## Build wiring (M0, unverified)
++
++- `settings.gradle.kts`: `include(":immersive")`.
++- `libs.versions.toml`: plugin `android-kotlin-multiplatform-library` = `com.android.kotlin.multiplatform.library`
++  (version = AGP). This is the AGP 9 way to give a KMP module an Android target; the older
++  `kotlin-multiplatform` + `com.android.library` + `androidTarget()` combination is not supported by
++  AGP 9. **If your AGP says otherwise, change this one plugin line and the `kotlin { android { } }`
++  block in `immersive/build.gradle.kts`; nothing else depends on it.**
++- Targets: Android (`minSdk 29`, `compileSdk 37`, JVM 17) and `jvm("desktop")` (JVM 17).
++- `:app` gets `implementation(project(":immersive"))`.
++- `:desktop` is a plain `kotlin("jvm")` module and can consume the `desktop` target as-is.
++- Compose: `kotlin.compose` + `compose.multiplatform` plugins, same versions as `:desktop`.
++- Possible friction: `:app` uses androidx Compose BOM 2026.06.01 (material3 1.5.0-beta02) while
++  CMP 1.12.2 brings its own androidx artifacts; Gradle picks the higher. If a duplicate-class or
++  API mismatch appears, align them in `libs.versions.toml`.
++
++## Status
++
++| Milestone | State |
++|---|---|
++| Analysis, `tools/desktop-port/portability.py`, this file | done |
++| M0 scaffold + first files | **written, UNVERIFIED (no compiler).** `:immersive` module created and wired (`settings`, `libs.versions.toml`, root `build.gradle.kts`, `:app` dependency). Moved to `immersive/src/commonMain/...` (same packages): `shell/backdrop/internal/{InverseLayerScope,LayerRecorder,Outline,Shaders,ShapeProvider}.kt`, `internal` made public (the other glass files still in `:app` use them), `@Language` dropped from `Shaders.kt`. Not yet done: `:desktop` does not depend on `:immersive` yet. |
++| M1 ... M7 | not started |
++
++## Next action
++
++1. **Someone with a toolchain: run "Verify" above and fix M0 until it is green** (most likely the AGP
++   plugin id / `kotlin { android { } }` block, or a Compose version mismatch; see "Build wiring"). Do not
++   start M1 on a red M0. Record the outcome in the Log, and if the plugin line had to change, update
++   "Build wiring" too.
++2. **Then M1, first file `ui/immersive/ImmersiveTheme.kt` (86 lines).** It is not pure yet:
++   - `Immersive.Page` reads `app.myspoti.power.EnergySettings.oledBlack` and `Immersive.Raised` reads
++     `com.music.spotui.extensions.ExtensionLook.color(...)`: replace both with a small
++     `ImmersiveAppearance` (an interface or fun values, provided through a CompositionLocal or set once at
++     startup) that `:app` fills from those two sources and `:desktop` fills with defaults.
++   - Fonts `ImmersiveSans` / `ImmersiveDisplay` live in `ui/look/Look.kt` and read `AppFontPref.system` and
++     Android `res/font` (`inter.ttf`, `app_sans.ttf`): move the two font vals out, backed by Compose
++     Multiplatform resources (`Font(Res.font.inter)`), with "use system font" passed in via the same
++     appearance object.
++   - `rememberReduceMotion()` (`ui/look/Look.kt`, used by 15 Immersive files) reads Android
++     `Settings.Global` through `LocalContext`: make it `expect/actual` (desktop: `false`, or an OS hint).
++   - Then `ImmersiveMotion.kt` (needs `rememberReduceMotion`, `Routes`, `NavBackStackEntry`),
++     `WindowSize.kt` (`LocalConfiguration` -> `LocalWindowInfo.containerSize`), `secondaryClick`,
++     `ImmersiveClickable.kt`.
++3. After each file or small group: `python3 tools/desktop-port/portability.py` to see what became movable,
++   move it (`git mv`, same package, `internal` -> public where `:app` still uses it), run Verify, and update
++   Status and Log.
++
++## Log (newest first; add one line per session)
++
++- 2026-11-21: analysis, plan, M0 written (no compiler available in that session). See STATUS above.
++
++## Things learned the hard way (add yours)
++
++- "Portable by imports" is not portable: Kotlin needs no import for same-package references, so a file
++  with clean imports can still depend on an Android-only neighbour. Check with the script, which
++  follows same-package references. First pass said 24 files were portable; the real number was 5.
++- Even the theme is impure: `object Immersive` (`ImmersiveTheme.kt`) reads app singletons (`EnergySettings`,
++  `ExtensionLook`), and the fonts come from Android `res/font` via `AppFontPref`. Expect this in other
++  "obviously UI" files: check the file, not its name.
++- `Shaders.kt` (AGSL strings) uses `@Language`, which only exists on the JVM; it is an editor hint
++  and is dropped when the file moves.
+
+--- a/base/app/build.gradle.kts	2026-11-21 15:42:36.000000000 +0000
++++ b/base/app/build.gradle.kts	2026-11-21 10:12:03.575957624 +0000
+@@ -148,6 +148,8 @@
+ 
+ dependencies {
+     implementation(project(":host-android"))
++    // The Immersive UI shared with the desktop app (being moved out of this module, see ../DESKTOP.md).
++    implementation(project(":immersive"))
+     // YouTube Music as the account provider (listen sync, library read, metadata on the user's session).
+     implementation(project(":api-ytmusic"))
+     // The watch's app asks this one for the account's session and playlists (WearLinkService).
+
+--- a/base/app/src/main/java/com/music/spotui/ui/immersive/shell/backdrop/internal/InverseLayerScope.kt	2026-11-21 15:42:36.000000000 +0000
++++ b/base/app/src/main/java/com/music/spotui/ui/immersive/shell/backdrop/internal/InverseLayerScope.kt	1970-01-01 00:00:00.000000000 +0000
+@@ -1,142 +0,0 @@
+-/*
+- * Vendored from Kyant0/backdrop v2.0.0 (io.github.kyant0:backdrop)
+- * https://github.com/Kyant0/backdrop — Copyright 2025 Kyant0, Apache License 2.0
+- *
+- * Vendored so the library ships as source with this app (binary AARs compiled
+- * against older Compose broke at runtime) and to add a backdrop resolution
+- * scale for cheaper effect rendering. KMP expect/actual declarations were
+- * merged into this single Android source set. Package renamed accordingly.
+- * Myspoti copy taken from BitChord's vendored tree (github.com/kushagrasinghx/BitChord,
+- * app/src/main/java/com/music/bitchord/ui/components/backdrop at edc1e6f), which adds
+- * backdropScale and exportedBackdrop to drawBackdrop. Package renamed again for Myspoti.
+- */
+-package com.music.spotui.ui.immersive.shell.backdrop.internal
+-
+-import androidx.compose.ui.geometry.Offset
+-import androidx.compose.ui.geometry.Size
+-import androidx.compose.ui.graphics.BlendMode
+-import androidx.compose.ui.graphics.Color
+-import androidx.compose.ui.graphics.ColorFilter
+-import androidx.compose.ui.graphics.CompositingStrategy
+-import androidx.compose.ui.graphics.DefaultCameraDistance
+-import androidx.compose.ui.graphics.DefaultShadowColor
+-import androidx.compose.ui.graphics.GraphicsLayerScope
+-import androidx.compose.ui.graphics.Matrix
+-import androidx.compose.ui.graphics.RectangleShape
+-import androidx.compose.ui.graphics.RenderEffect
+-import androidx.compose.ui.graphics.Shape
+-import androidx.compose.ui.graphics.TransformOrigin
+-import androidx.compose.ui.graphics.drawscope.DrawTransform
+-import androidx.compose.ui.unit.Density
+-import kotlin.math.PI
+-import kotlin.math.cos
+-import kotlin.math.sin
+-
+-internal class InverseLayerScope : GraphicsLayerScope {
+-
+-    override var size: Size = Size.Unspecified
+-    override var density: Float = 1f
+-    override var fontScale: Float = 1f
+-
+-    override var scaleX: Float = 1f
+-    override var scaleY: Float = 1f
+-    override var alpha: Float = 0f
+-    override var translationX: Float = 0f
+-    override var translationY: Float = 0f
+-    override var shadowElevation: Float = 0f
+-    override var ambientShadowColor: Color = DefaultShadowColor
+-    override var spotShadowColor: Color = DefaultShadowColor
+-    override var rotationX: Float = 0f
+-    override var rotationY: Float = 0f
+-    override var rotationZ: Float = 0f
+-    override var cameraDistance: Float = DefaultCameraDistance
+-    override var transformOrigin: TransformOrigin = TransformOrigin.Center
+-    override var shape: Shape = RectangleShape
+-    override var clip: Boolean = false
+-    override var renderEffect: RenderEffect? = null
+-    override var blendMode: BlendMode = BlendMode.SrcOver
+-    override var colorFilter: ColorFilter? = null
+-    override var compositingStrategy: CompositingStrategy = CompositingStrategy.Auto
+-
+-    private var matrix: Matrix? = null
+-
+-    fun DrawTransform.inverseTransform(
+-        density: Density,
+-        layerBlock: GraphicsLayerScope.() -> Unit
+-    ) {
+-        this@InverseLayerScope.size = size
+-        this@InverseLayerScope.density = density.density
+-        fontScale = density.fontScale
+-
+-        layerBlock()
+-
+-        inverseTransformAtTopLeft(
+-            rotationZ = rotationZ,
+-            scaleX = scaleX,
+-            scaleY = scaleY
+-        )
+-    }
+-
+-    fun reset() {
+-        size = Size.Unspecified
+-        density = 1f
+-        fontScale = 1f
+-
+-        scaleX = 1f
+-        scaleY = 1f
+-        alpha = 1f
+-        translationX = 0f
+-        translationY = 0f
+-        shadowElevation = 0f
+-        ambientShadowColor = DefaultShadowColor
+-        spotShadowColor = DefaultShadowColor
+-        rotationX = 0f
+-        rotationY = 0f
+-        rotationZ = 0f
+-        cameraDistance = DefaultCameraDistance
+-        transformOrigin = TransformOrigin.Center
+-        shape = RectangleShape
+-        clip = false
+-        renderEffect = null
+-        blendMode = BlendMode.SrcOver
+-        colorFilter = null
+-        compositingStrategy = CompositingStrategy.Auto
+-
+-        matrix = null
+-    }
+-
+-    private fun DrawTransform.inverseTransformAtTopLeft(
+-        rotationZ: Float = 0f,
+-        scaleX: Float = 1f,
+-        scaleY: Float = 1f
+-    ) {
+-        if (rotationZ == 0f) {
+-            if (scaleX != 0f && scaleY != 0f) {
+-                scale(1f / scaleX, 1f / scaleY, Offset.Zero)
+-            }
+-            return
+-        }
+-
+-        val matrix = matrix ?: Matrix().also { matrix = it }
+-        if (matrix.values.size < 16) return
+-
+-        val rz = rotationZ * (PI / 180.0)
+-        val rsz = sin(rz).toFloat()
+-        val rcz = cos(rz).toFloat()
+-
+-        val a00 = rcz * scaleX
+-        val a01 = rsz * scaleY
+-        val a10 = -rsz * scaleX
+-        val a11 = rcz * scaleY
+-
+-        val det = a00 * a11 - a01 * a10
+-        if (det == 0f) return
+-        val invDet = 1f / det
+-        matrix[0, 0] = a11 * invDet
+-        matrix[0, 1] = -a01 * invDet
+-        matrix[1, 0] = -a10 * invDet
+-        matrix[1, 1] = a00 * invDet
+-
+-        transform(matrix)
+-    }
+-}
+
+--- a/base/app/src/main/java/com/music/spotui/ui/immersive/shell/backdrop/internal/LayerRecorder.kt	2026-11-21 15:42:36.000000000 +0000
++++ b/base/app/src/main/java/com/music/spotui/ui/immersive/shell/backdrop/internal/LayerRecorder.kt	1970-01-01 00:00:00.000000000 +0000
+@@ -1,42 +0,0 @@
+-/*
+- * Vendored from Kyant0/backdrop v2.0.0 (io.github.kyant0:backdrop)
+- * https://github.com/Kyant0/backdrop — Copyright 2025 Kyant0, Apache License 2.0
+- *
+- * Vendored so the library ships as source with this app (binary AARs compiled
+- * against older Compose broke at runtime) and to add a backdrop resolution
+- * scale for cheaper effect rendering. KMP expect/actual declarations were
+- * merged into this single Android source set. Package renamed accordingly.
+- * Myspoti copy taken from BitChord's vendored tree (github.com/kushagrasinghx/BitChord,
+- * app/src/main/java/com/music/bitchord/ui/components/backdrop at edc1e6f), which adds
+- * backdropScale and exportedBackdrop to drawBackdrop. Package renamed again for Myspoti.
+- */
+-package com.music.spotui.ui.immersive.shell.backdrop.internal
+-
+-import androidx.compose.ui.graphics.drawscope.DrawScope
+-import androidx.compose.ui.graphics.layer.GraphicsLayer
+-import androidx.compose.ui.node.DelegatableNode
+-import androidx.compose.ui.node.requireDensity
+-import androidx.compose.ui.unit.IntSize
+-import androidx.compose.ui.unit.toIntSize
+-
+-// Vendored change: the upstream declaration used an experimental Kotlin context
+-// parameter (`context(node: DelegatableNode)`), which would require enabling
+-// -Xcontext-parameters for the whole app module; the node is an explicit
+-// parameter instead.
+-internal fun DrawScope.recordLayer(
+-    node: DelegatableNode,
+-    layer: GraphicsLayer,
+-    size: IntSize = this.size.toIntSize(),
+-    block: DrawScope.() -> Unit
+-) {
+-    val density = node.requireDensity()
+-    layer.record(size) {
+-        val prevDensity = drawContext.density
+-        drawContext.density = density
+-        try {
+-            this.block()
+-        } finally {
+-            drawContext.density = prevDensity
+-        }
+-    }
+-}
+
+--- a/base/app/src/main/java/com/music/spotui/ui/immersive/shell/backdrop/internal/Outline.kt	2026-11-21 15:42:36.000000000 +0000
++++ b/base/app/src/main/java/com/music/spotui/ui/immersive/shell/backdrop/internal/Outline.kt	1970-01-01 00:00:00.000000000 +0000
+@@ -1,30 +0,0 @@
+-/*
+- * Vendored from Kyant0/backdrop v2.0.0 (io.github.kyant0:backdrop)
+- * https://github.com/Kyant0/backdrop — Copyright 2025 Kyant0, Apache License 2.0
+- *
+- * Vendored so the library ships as source with this app (binary AARs compiled
+- * against older Compose broke at runtime) and to add a backdrop resolution
+- * scale for cheaper effect rendering. KMP expect/actual declarations were
+- * merged into this single Android source set. Package renamed accordingly.
+- * Myspoti copy taken from BitChord's vendored tree (github.com/kushagrasinghx/BitChord,
+- * app/src/main/java/com/music/bitchord/ui/components/backdrop at edc1e6f), which adds
+- * backdropScale and exportedBackdrop to drawBackdrop. Package renamed again for Myspoti.
+- */
+-package com.music.spotui.ui.immersive.shell.backdrop.internal
+-
+-import androidx.compose.ui.graphics.Canvas
+-import androidx.compose.ui.graphics.Outline
+-import androidx.compose.ui.graphics.Path
+-
+-internal fun Canvas.clipOutline(outline: Outline, path: Path?) {
+-    when (outline) {
+-        is Outline.Rectangle -> clipRect(outline.rect)
+-        is Outline.Rounded -> {
+-            path!!.rewind()
+-            path.addRoundRect(outline.roundRect)
+-            clipPath(path)
+-        }
+-
+-        is Outline.Generic -> clipPath(outline.path)
+-    }
+-}
+
+--- a/base/app/src/main/java/com/music/spotui/ui/immersive/shell/backdrop/internal/Shaders.kt	2026-11-21 15:42:36.000000000 +0000
++++ b/base/app/src/main/java/com/music/spotui/ui/immersive/shell/backdrop/internal/Shaders.kt	1970-01-01 00:00:00.000000000 +0000
+@@ -1,216 +0,0 @@
+-/*
+- * Vendored from Kyant0/backdrop v2.0.0 (io.github.kyant0:backdrop)
+- * https://github.com/Kyant0/backdrop — Copyright 2025 Kyant0, Apache License 2.0
+- *
+- * Vendored so the library ships as source with this app (binary AARs compiled
+- * against older Compose broke at runtime) and to add a backdrop resolution
+- * scale for cheaper effect rendering. KMP expect/actual declarations were
+- * merged into this single Android source set. Package renamed accordingly.
+- * Myspoti copy taken from BitChord's vendored tree (github.com/kushagrasinghx/BitChord,
+- * app/src/main/java/com/music/bitchord/ui/components/backdrop at edc1e6f), which adds
+- * backdropScale and exportedBackdrop to drawBackdrop. Package renamed again for Myspoti.
+- */
+-/*
+-   Copyright 2025 Kyant
+-
+-   Licensed under the Apache License, Version 2.0 (the "License");
+-   you may not use this file except in compliance with the License.
+-   You may obtain a copy of the License at
+-
+-       http://www.apache.org/licenses/LICENSE-2.0
+-
+-   Unless required by applicable law or agreed to in writing, software
+-   distributed under the License is distributed on an "AS IS" BASIS,
+-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-   See the License for the specific language governing permissions and
+-   limitations under the License.
+- */
+-
+-package com.music.spotui.ui.immersive.shell.backdrop.internal
+-
+-import org.intellij.lang.annotations.Language
+-
+-@Language("AGSL")
+-private const val RoundedRectSDF = """
+-float radiusAt(float2 coord, float4 radii) {
+-    if (coord.x >= 0.0) {
+-        if (coord.y <= 0.0) return radii.y;
+-        else return radii.z;
+-    } else {
+-        if (coord.y <= 0.0) return radii.x;
+-        else return radii.w;
+-    }
+-}
+-
+-float sdRoundedRect(float2 coord, float2 halfSize, float radius) {
+-    float2 cornerCoord = abs(coord) - (halfSize - float2(radius));
+-    float outside = length(max(cornerCoord, 0.0)) - radius;
+-    float inside = min(max(cornerCoord.x, cornerCoord.y), 0.0);
+-    return outside + inside;
+-}
+-
+-float2 gradSdRoundedRect(float2 coord, float2 halfSize, float radius) {
+-    float2 cornerCoord = abs(coord) - (halfSize - float2(radius));
+-    if (cornerCoord.x >= 0.0 || cornerCoord.y >= 0.0) {
+-        return sign(coord) * normalize(max(cornerCoord, 0.0));
+-    } else {
+-        float gradX = step(cornerCoord.y, cornerCoord.x);
+-        return sign(coord) * float2(gradX, 1.0 - gradX);
+-    }
+-}"""
+-
+-@Language("AGSL")
+-internal const val RoundedRectRefractionShaderString = """
+-uniform shader content;
+-
+-uniform float2 size;
+-uniform float2 offset;
+-uniform float4 cornerRadii;
+-uniform float refractionHeight;
+-uniform float refractionAmount;
+-uniform float depthEffect;
+-
+-$RoundedRectSDF
+-
+-float circleMap(float x) {
+-    return 1.0 - sqrt(1.0 - x * x);
+-}
+-
+-half4 main(float2 coord) {
+-    float2 halfSize = size * 0.5;
+-    float2 centeredCoord = (coord + offset) - halfSize;
+-    float radius = radiusAt(coord, cornerRadii);
+-    
+-    float sd = sdRoundedRect(centeredCoord, halfSize, radius);
+-    if (-sd >= refractionHeight) {
+-        return content.eval(coord);
+-    }
+-    sd = min(sd, 0.0);
+-    
+-    float d = circleMap(1.0 - -sd / refractionHeight) * refractionAmount;
+-    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+-    float2 grad = normalize(gradSdRoundedRect(centeredCoord, halfSize, gradRadius) + depthEffect * normalize(centeredCoord));
+-    
+-    float2 refractedCoord = coord + d * grad;
+-    return content.eval(refractedCoord);
+-}"""
+-
+-@Language("AGSL")
+-internal val RoundedRectRefractionWithDispersionShaderString = """
+-uniform shader content;
+-
+-uniform float2 size;
+-uniform float2 offset;
+-uniform float4 cornerRadii;
+-uniform float refractionHeight;
+-uniform float refractionAmount;
+-uniform float depthEffect;
+-uniform float chromaticAberration;
+-
+-$RoundedRectSDF
+-
+-float circleMap(float x) {
+-    return 1.0 - sqrt(1.0 - x * x);
+-}
+-
+-half4 main(float2 coord) {
+-    float2 halfSize = size * 0.5;
+-    float2 centeredCoord = (coord + offset) - halfSize;
+-    float radius = radiusAt(coord, cornerRadii);
+-    
+-    float sd = sdRoundedRect(centeredCoord, halfSize, radius);
+-    if (-sd >= refractionHeight) {
+-        return content.eval(coord);
+-    }
+-    sd = min(sd, 0.0);
+-    
+-    float d = circleMap(1.0 - -sd / refractionHeight) * refractionAmount;
+-    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+-    float2 grad = normalize(gradSdRoundedRect(centeredCoord, halfSize, gradRadius) + depthEffect * normalize(centeredCoord));
+-    
+-    float2 refractedCoord = coord + d * grad;
+-    float dispersionIntensity = chromaticAberration * ((centeredCoord.x * centeredCoord.y) / (halfSize.x * halfSize.y));
+-    float2 dispersedCoord = d * grad * dispersionIntensity;
+-    
+-    half4 color = half4(0.0);
+-    
+-    half4 red = content.eval(refractedCoord + dispersedCoord);
+-    color.r += red.r / 3.5;
+-    color.a += red.a / 7.0;
+-    
+-    half4 orange = content.eval(refractedCoord + dispersedCoord * (2.0 / 3.0));
+-    color.r += orange.r / 3.5;
+-    color.g += orange.g / 7.0;
+-    color.a += orange.a / 7.0;
+-    
+-    half4 yellow = content.eval(refractedCoord + dispersedCoord * (1.0 / 3.0));
+-    color.r += yellow.r / 3.5;
+-    color.g += yellow.g / 3.5;
+-    color.a += yellow.a / 7.0;
+-    
+-    half4 green = content.eval(refractedCoord);
+-    color.g += green.g / 3.5;
+-    color.a += green.a / 7.0;
+-    
+-    half4 cyan = content.eval(refractedCoord - dispersedCoord * (1.0 / 3.0));
+-    color.g += cyan.g / 3.5;
+-    color.b += cyan.b / 3.0;
+-    color.a += cyan.a / 7.0;
+-    
+-    half4 blue = content.eval(refractedCoord - dispersedCoord * (2.0 / 3.0));
+-    color.b += blue.b / 3.0;
+-    color.a += blue.a / 7.0;
+-    
+-    half4 purple = content.eval(refractedCoord - dispersedCoord);
+-    color.r += purple.r / 7.0;
+-    color.b += purple.b / 3.0;
+-    color.a += purple.a / 7.0;
+-    
+-    return color;
+-}"""
+-
+-@Language("AGSL")
+-internal const val DefaultHighlightShaderString = """
+-uniform float2 size;
+-uniform float4 cornerRadii;
+-layout(color) uniform half4 color;
+-uniform float angle;
+-uniform float falloff;
+-
+-$RoundedRectSDF
+-
+-half4 main(float2 coord) {
+-    float2 halfSize = size * 0.5;
+-    float2 centeredCoord = coord - halfSize;
+-    float radius = radiusAt(coord, cornerRadii);
+-    
+-    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+-    float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+-    float2 normal = float2(cos(angle), sin(angle));
+-    float d = dot(grad, normal);
+-    float intensity = pow(abs(d), falloff);
+-    return color * intensity;
+-}"""
+-
+-@Language("AGSL")
+-internal const val AmbientHighlightShaderString = """
+-uniform float2 size;
+-uniform float4 cornerRadii;
+-uniform float angle;
+-uniform float falloff;
+-
+-$RoundedRectSDF
+-
+-half4 main(float2 coord) {
+-    float2 halfSize = size * 0.5;
+-    float2 centeredCoord = coord - halfSize;
+-    float radius = radiusAt(coord, cornerRadii);
+-    
+-    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
+-    float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
+-    float2 normal = float2(cos(angle), sin(angle));
+-    float d = dot(grad, normal);
+-    float intensity = pow(abs(d), falloff);
+-    float t = step(0.0, d);
+-    return half4(t, t, t, 1.0) * intensity;
+-}"""
+
+--- a/base/app/src/main/java/com/music/spotui/ui/immersive/shell/backdrop/internal/ShapeProvider.kt	2026-11-21 15:42:36.000000000 +0000
++++ b/base/app/src/main/java/com/music/spotui/ui/immersive/shell/backdrop/internal/ShapeProvider.kt	1970-01-01 00:00:00.000000000 +0000
+@@ -1,56 +0,0 @@
+-/*
+- * Vendored from Kyant0/backdrop v2.0.0 (io.github.kyant0:backdrop)
+- * https://github.com/Kyant0/backdrop — Copyright 2025 Kyant0, Apache License 2.0
+- *
+- * Vendored so the library ships as source with this app (binary AARs compiled
+- * against older Compose broke at runtime) and to add a backdrop resolution
+- * scale for cheaper effect rendering. KMP expect/actual declarations were
+- * merged into this single Android source set. Package renamed accordingly.
+- * Myspoti copy taken from BitChord's vendored tree (github.com/kushagrasinghx/BitChord,
+- * app/src/main/java/com/music/bitchord/ui/components/backdrop at edc1e6f), which adds
+- * backdropScale and exportedBackdrop to drawBackdrop. Package renamed again for Myspoti.
+- */
+-package com.music.spotui.ui.immersive.shell.backdrop.internal
+-
+-import androidx.compose.runtime.Immutable
+-import androidx.compose.ui.geometry.Size
+-import androidx.compose.ui.graphics.Outline
+-import androidx.compose.ui.graphics.Shape
+-import androidx.compose.ui.unit.Density
+-import androidx.compose.ui.unit.LayoutDirection
+-
+-@Immutable
+-internal class ShapeProvider(val shapeBlock: () -> Shape) {
+-
+-    private var _shape: Shape? = null
+-    private var _outline: Outline? = null
+-    private var _size: Size = Size.Unspecified
+-    private var _layoutDirection: LayoutDirection? = null
+-    private var _density: Float? = null
+-
+-    val innerShape
+-        get() = shapeBlock()
+-
+-    val shape = object : Shape {
+-
+-        override fun createOutline(
+-            size: Size,
+-            layoutDirection: LayoutDirection,
+-            density: Density
+-        ): Outline {
+-            val shape = shapeBlock()
+-            if (_shape != shape) {
+-                _shape = shape
+-                _outline = null
+-            }
+-            if (_outline == null || _size != size || _layoutDirection != layoutDirection || _density != density.density) {
+-                _size = size
+-                _layoutDirection = layoutDirection
+-                _density = density.density
+-                _outline = shape.createOutline(size, layoutDirection, density)
+-            }
+-
+-            return _outline!!
+-        }
+-    }
+-}
+
+--- a/base/build.gradle.kts	2026-11-21 15:42:36.000000000 +0000
++++ b/base/build.gradle.kts	2026-11-21 10:11:44.738225392 +0000
+@@ -1,6 +1,7 @@
+ plugins {
+     alias(libs.plugins.android.application) apply false
+     alias(libs.plugins.android.library) apply false
++    alias(libs.plugins.android.kotlin.multiplatform.library) apply false
+     alias(libs.plugins.kotlin.compose) apply false
+     alias(libs.plugins.kotlin.jvm) apply false
+     alias(libs.plugins.compose.multiplatform) apply false
+
+--- a/base/gradle/libs.versions.toml	2026-11-21 15:42:36.000000000 +0000
++++ b/base/gradle/libs.versions.toml	2026-11-21 10:11:44.737794241 +0000
+@@ -62,6 +62,8 @@
+ [plugins]
+ android-application = { id = "com.android.application", version.ref = "agp" }
+ android-library = { id = "com.android.library", version.ref = "agp" }
++# A Kotlin Multiplatform module with an Android target (AGP 9): :immersive.
++android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
+ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+ # The native playback core (:engine): commonMain code, a jvm() target for now.
+ kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+
+--- a/base/immersive/build.gradle.kts	1970-01-01 00:00:00.000000000 +0000
++++ b/base/immersive/build.gradle.kts	2026-11-21 10:11:53.915651825 +0000
+@@ -0,0 +1,32 @@
++// Orpheon's shared Immersive UI: Android (:app) and desktop (:desktop) draw the same screens.
++// Part of Orpheon (https://github.com/kota-zo/Orpheon), GPL-3.0. The plan and status: ../DESKTOP.md.
++//
++// UNVERIFIED (written without a compiler): if the plugin below is not found or not applicable, fix this
++// file and the `android` block only; see "Build wiring" in DESKTOP.md.
++plugins {
++    alias(libs.plugins.kotlin.multiplatform)
++    alias(libs.plugins.android.kotlin.multiplatform.library)
++    alias(libs.plugins.kotlin.compose)
++    alias(libs.plugins.compose.multiplatform)
++}
++
++kotlin {
++    jvmToolchain(17)
++
++    android {
++        namespace = "app.orpheon.immersive"
++        compileSdk = 37
++        minSdk = 29
++    }
++    jvm("desktop")
++
++    sourceSets {
++        commonMain.dependencies {
++            implementation(compose.runtime)
++            implementation(compose.foundation)
++            implementation(compose.ui)
++            implementation(compose.material3)
++            implementation(libs.coroutines.core)
++        }
++    }
++}
+
+--- a/base/immersive/src/commonMain/kotlin/com/music/spotui/ui/immersive/shell/backdrop/internal/InverseLayerScope.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/base/immersive/src/commonMain/kotlin/com/music/spotui/ui/immersive/shell/backdrop/internal/InverseLayerScope.kt	2026-11-21 10:11:54.178173560 +0000
+@@ -0,0 +1,142 @@
++/*
++ * Vendored from Kyant0/backdrop v2.0.0 (io.github.kyant0:backdrop)
++ * https://github.com/Kyant0/backdrop — Copyright 2025 Kyant0, Apache License 2.0
++ *
++ * Vendored so the library ships as source with this app (binary AARs compiled
++ * against older Compose broke at runtime) and to add a backdrop resolution
++ * scale for cheaper effect rendering. KMP expect/actual declarations were
++ * merged into this single Android source set. Package renamed accordingly.
++ * Myspoti copy taken from BitChord's vendored tree (github.com/kushagrasinghx/BitChord,
++ * app/src/main/java/com/music/bitchord/ui/components/backdrop at edc1e6f), which adds
++ * backdropScale and exportedBackdrop to drawBackdrop. Package renamed again for Myspoti.
++ */
++package com.music.spotui.ui.immersive.shell.backdrop.internal
++
++import androidx.compose.ui.geometry.Offset
++import androidx.compose.ui.geometry.Size
++import androidx.compose.ui.graphics.BlendMode
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.graphics.ColorFilter
++import androidx.compose.ui.graphics.CompositingStrategy
++import androidx.compose.ui.graphics.DefaultCameraDistance
++import androidx.compose.ui.graphics.DefaultShadowColor
++import androidx.compose.ui.graphics.GraphicsLayerScope
++import androidx.compose.ui.graphics.Matrix
++import androidx.compose.ui.graphics.RectangleShape
++import androidx.compose.ui.graphics.RenderEffect
++import androidx.compose.ui.graphics.Shape
++import androidx.compose.ui.graphics.TransformOrigin
++import androidx.compose.ui.graphics.drawscope.DrawTransform
++import androidx.compose.ui.unit.Density
++import kotlin.math.PI
++import kotlin.math.cos
++import kotlin.math.sin
++
++class InverseLayerScope : GraphicsLayerScope {
++
++    override var size: Size = Size.Unspecified
++    override var density: Float = 1f
++    override var fontScale: Float = 1f
++
++    override var scaleX: Float = 1f
++    override var scaleY: Float = 1f
++    override var alpha: Float = 0f
++    override var translationX: Float = 0f
++    override var translationY: Float = 0f
++    override var shadowElevation: Float = 0f
++    override var ambientShadowColor: Color = DefaultShadowColor
++    override var spotShadowColor: Color = DefaultShadowColor
++    override var rotationX: Float = 0f
++    override var rotationY: Float = 0f
++    override var rotationZ: Float = 0f
++    override var cameraDistance: Float = DefaultCameraDistance
++    override var transformOrigin: TransformOrigin = TransformOrigin.Center
++    override var shape: Shape = RectangleShape
++    override var clip: Boolean = false
++    override var renderEffect: RenderEffect? = null
++    override var blendMode: BlendMode = BlendMode.SrcOver
++    override var colorFilter: ColorFilter? = null
++    override var compositingStrategy: CompositingStrategy = CompositingStrategy.Auto
++
++    private var matrix: Matrix? = null
++
++    fun DrawTransform.inverseTransform(
++        density: Density,
++        layerBlock: GraphicsLayerScope.() -> Unit
++    ) {
++        this@InverseLayerScope.size = size
++        this@InverseLayerScope.density = density.density
++        fontScale = density.fontScale
++
++        layerBlock()
++
++        inverseTransformAtTopLeft(
++            rotationZ = rotationZ,
++            scaleX = scaleX,
++            scaleY = scaleY
++        )
++    }
++
++    fun reset() {
++        size = Size.Unspecified
++        density = 1f
++        fontScale = 1f
++
++        scaleX = 1f
++        scaleY = 1f
++        alpha = 1f
++        translationX = 0f
++        translationY = 0f
++        shadowElevation = 0f
++        ambientShadowColor = DefaultShadowColor
++        spotShadowColor = DefaultShadowColor
++        rotationX = 0f
++        rotationY = 0f
++        rotationZ = 0f
++        cameraDistance = DefaultCameraDistance
++        transformOrigin = TransformOrigin.Center
++        shape = RectangleShape
++        clip = false
++        renderEffect = null
++        blendMode = BlendMode.SrcOver
++        colorFilter = null
++        compositingStrategy = CompositingStrategy.Auto
++
++        matrix = null
++    }
++
++    private fun DrawTransform.inverseTransformAtTopLeft(
++        rotationZ: Float = 0f,
++        scaleX: Float = 1f,
++        scaleY: Float = 1f
++    ) {
++        if (rotationZ == 0f) {
++            if (scaleX != 0f && scaleY != 0f) {
++                scale(1f / scaleX, 1f / scaleY, Offset.Zero)
++            }
++            return
++        }
++
++        val matrix = matrix ?: Matrix().also { matrix = it }
++        if (matrix.values.size < 16) return
++
++        val rz = rotationZ * (PI / 180.0)
++        val rsz = sin(rz).toFloat()
++        val rcz = cos(rz).toFloat()
++
++        val a00 = rcz * scaleX
++        val a01 = rsz * scaleY
++        val a10 = -rsz * scaleX
++        val a11 = rcz * scaleY
++
++        val det = a00 * a11 - a01 * a10
++        if (det == 0f) return
++        val invDet = 1f / det
++        matrix[0, 0] = a11 * invDet
++        matrix[0, 1] = -a01 * invDet
++        matrix[1, 0] = -a10 * invDet
++        matrix[1, 1] = a00 * invDet
++
++        transform(matrix)
++    }
++}
+
+--- a/base/immersive/src/commonMain/kotlin/com/music/spotui/ui/immersive/shell/backdrop/internal/LayerRecorder.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/base/immersive/src/commonMain/kotlin/com/music/spotui/ui/immersive/shell/backdrop/internal/LayerRecorder.kt	2026-11-21 10:11:54.178759919 +0000
+@@ -0,0 +1,42 @@
++/*
++ * Vendored from Kyant0/backdrop v2.0.0 (io.github.kyant0:backdrop)
++ * https://github.com/Kyant0/backdrop — Copyright 2025 Kyant0, Apache License 2.0
++ *
++ * Vendored so the library ships as source with this app (binary AARs compiled
++ * against older Compose broke at runtime) and to add a backdrop resolution
++ * scale for cheaper effect rendering. KMP expect/actual declarations were
++ * merged into this single Android source set. Package renamed accordingly.
++ * Myspoti copy taken from BitChord's vendored tree (github.com/kushagrasinghx/BitChord,
++ * app/src/main/java/com/music/bitchord/ui/components/backdrop at edc1e6f), which adds
++ * backdropScale and exportedBackdrop to drawBackdrop. Package renamed again for Myspoti.
++ */
++package com.music.spotui.ui.immersive.shell.backdrop.internal
++
++import androidx.compose.ui.graphics.drawscope.DrawScope
++import androidx.compose.ui.graphics.layer.GraphicsLayer
++import androidx.compose.ui.node.DelegatableNode
++import androidx.compose.ui.node.requireDensity
++import androidx.compose.ui.unit.IntSize
++import androidx.compose.ui.unit.toIntSize
++
++// Vendored change: the upstream declaration used an experimental Kotlin context
++// parameter (`context(node: DelegatableNode)`), which would require enabling
++// -Xcontext-parameters for the whole app module; the node is an explicit
++// parameter instead.
++fun DrawScope.recordLayer(
++    node: DelegatableNode,
++    layer: GraphicsLayer,
++    size: IntSize = this.size.toIntSize(),
++    block: DrawScope.() -> Unit
++) {
++    val density = node.requireDensity()
++    layer.record(size) {
++        val prevDensity = drawContext.density
++        drawContext.density = density
++        try {
++            this.block()
++        } finally {
++            drawContext.density = prevDensity
++        }
++    }
++}
+
+--- a/base/immersive/src/commonMain/kotlin/com/music/spotui/ui/immersive/shell/backdrop/internal/Outline.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/base/immersive/src/commonMain/kotlin/com/music/spotui/ui/immersive/shell/backdrop/internal/Outline.kt	2026-11-21 10:11:54.179322798 +0000
+@@ -0,0 +1,30 @@
++/*
++ * Vendored from Kyant0/backdrop v2.0.0 (io.github.kyant0:backdrop)
++ * https://github.com/Kyant0/backdrop — Copyright 2025 Kyant0, Apache License 2.0
++ *
++ * Vendored so the library ships as source with this app (binary AARs compiled
++ * against older Compose broke at runtime) and to add a backdrop resolution
++ * scale for cheaper effect rendering. KMP expect/actual declarations were
++ * merged into this single Android source set. Package renamed accordingly.
++ * Myspoti copy taken from BitChord's vendored tree (github.com/kushagrasinghx/BitChord,
++ * app/src/main/java/com/music/bitchord/ui/components/backdrop at edc1e6f), which adds
++ * backdropScale and exportedBackdrop to drawBackdrop. Package renamed again for Myspoti.
++ */
++package com.music.spotui.ui.immersive.shell.backdrop.internal
++
++import androidx.compose.ui.graphics.Canvas
++import androidx.compose.ui.graphics.Outline
++import androidx.compose.ui.graphics.Path
++
++fun Canvas.clipOutline(outline: Outline, path: Path?) {
++    when (outline) {
++        is Outline.Rectangle -> clipRect(outline.rect)
++        is Outline.Rounded -> {
++            path!!.rewind()
++            path.addRoundRect(outline.roundRect)
++            clipPath(path)
++        }
++
++        is Outline.Generic -> clipPath(outline.path)
++    }
++}
+
+--- a/base/immersive/src/commonMain/kotlin/com/music/spotui/ui/immersive/shell/backdrop/internal/Shaders.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/base/immersive/src/commonMain/kotlin/com/music/spotui/ui/immersive/shell/backdrop/internal/Shaders.kt	2026-11-21 10:11:56.990638859 +0000
+@@ -0,0 +1,210 @@
++/*
++ * Vendored from Kyant0/backdrop v2.0.0 (io.github.kyant0:backdrop)
++ * https://github.com/Kyant0/backdrop — Copyright 2025 Kyant0, Apache License 2.0
++ *
++ * Vendored so the library ships as source with this app (binary AARs compiled
++ * against older Compose broke at runtime) and to add a backdrop resolution
++ * scale for cheaper effect rendering. KMP expect/actual declarations were
++ * merged into this single Android source set. Package renamed accordingly.
++ * Myspoti copy taken from BitChord's vendored tree (github.com/kushagrasinghx/BitChord,
++ * app/src/main/java/com/music/bitchord/ui/components/backdrop at edc1e6f), which adds
++ * backdropScale and exportedBackdrop to drawBackdrop. Package renamed again for Myspoti.
++ */
++/*
++   Copyright 2025 Kyant
++
++   Licensed under the Apache License, Version 2.0 (the "License");
++   you may not use this file except in compliance with the License.
++   You may obtain a copy of the License at
++
++       http://www.apache.org/licenses/LICENSE-2.0
++
++   Unless required by applicable law or agreed to in writing, software
++   distributed under the License is distributed on an "AS IS" BASIS,
++   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++   See the License for the specific language governing permissions and
++   limitations under the License.
++ */
++
++package com.music.spotui.ui.immersive.shell.backdrop.internal
++
++
++private const val RoundedRectSDF = """
++float radiusAt(float2 coord, float4 radii) {
++    if (coord.x >= 0.0) {
++        if (coord.y <= 0.0) return radii.y;
++        else return radii.z;
++    } else {
++        if (coord.y <= 0.0) return radii.x;
++        else return radii.w;
++    }
++}
++
++float sdRoundedRect(float2 coord, float2 halfSize, float radius) {
++    float2 cornerCoord = abs(coord) - (halfSize - float2(radius));
++    float outside = length(max(cornerCoord, 0.0)) - radius;
++    float inside = min(max(cornerCoord.x, cornerCoord.y), 0.0);
++    return outside + inside;
++}
++
++float2 gradSdRoundedRect(float2 coord, float2 halfSize, float radius) {
++    float2 cornerCoord = abs(coord) - (halfSize - float2(radius));
++    if (cornerCoord.x >= 0.0 || cornerCoord.y >= 0.0) {
++        return sign(coord) * normalize(max(cornerCoord, 0.0));
++    } else {
++        float gradX = step(cornerCoord.y, cornerCoord.x);
++        return sign(coord) * float2(gradX, 1.0 - gradX);
++    }
++}"""
++
++const val RoundedRectRefractionShaderString = """
++uniform shader content;
++
++uniform float2 size;
++uniform float2 offset;
++uniform float4 cornerRadii;
++uniform float refractionHeight;
++uniform float refractionAmount;
++uniform float depthEffect;
++
++$RoundedRectSDF
++
++float circleMap(float x) {
++    return 1.0 - sqrt(1.0 - x * x);
++}
++
++half4 main(float2 coord) {
++    float2 halfSize = size * 0.5;
++    float2 centeredCoord = (coord + offset) - halfSize;
++    float radius = radiusAt(coord, cornerRadii);
++    
++    float sd = sdRoundedRect(centeredCoord, halfSize, radius);
++    if (-sd >= refractionHeight) {
++        return content.eval(coord);
++    }
++    sd = min(sd, 0.0);
++    
++    float d = circleMap(1.0 - -sd / refractionHeight) * refractionAmount;
++    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
++    float2 grad = normalize(gradSdRoundedRect(centeredCoord, halfSize, gradRadius) + depthEffect * normalize(centeredCoord));
++    
++    float2 refractedCoord = coord + d * grad;
++    return content.eval(refractedCoord);
++}"""
++
++val RoundedRectRefractionWithDispersionShaderString = """
++uniform shader content;
++
++uniform float2 size;
++uniform float2 offset;
++uniform float4 cornerRadii;
++uniform float refractionHeight;
++uniform float refractionAmount;
++uniform float depthEffect;
++uniform float chromaticAberration;
++
++$RoundedRectSDF
++
++float circleMap(float x) {
++    return 1.0 - sqrt(1.0 - x * x);
++}
++
++half4 main(float2 coord) {
++    float2 halfSize = size * 0.5;
++    float2 centeredCoord = (coord + offset) - halfSize;
++    float radius = radiusAt(coord, cornerRadii);
++    
++    float sd = sdRoundedRect(centeredCoord, halfSize, radius);
++    if (-sd >= refractionHeight) {
++        return content.eval(coord);
++    }
++    sd = min(sd, 0.0);
++    
++    float d = circleMap(1.0 - -sd / refractionHeight) * refractionAmount;
++    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
++    float2 grad = normalize(gradSdRoundedRect(centeredCoord, halfSize, gradRadius) + depthEffect * normalize(centeredCoord));
++    
++    float2 refractedCoord = coord + d * grad;
++    float dispersionIntensity = chromaticAberration * ((centeredCoord.x * centeredCoord.y) / (halfSize.x * halfSize.y));
++    float2 dispersedCoord = d * grad * dispersionIntensity;
++    
++    half4 color = half4(0.0);
++    
++    half4 red = content.eval(refractedCoord + dispersedCoord);
++    color.r += red.r / 3.5;
++    color.a += red.a / 7.0;
++    
++    half4 orange = content.eval(refractedCoord + dispersedCoord * (2.0 / 3.0));
++    color.r += orange.r / 3.5;
++    color.g += orange.g / 7.0;
++    color.a += orange.a / 7.0;
++    
++    half4 yellow = content.eval(refractedCoord + dispersedCoord * (1.0 / 3.0));
++    color.r += yellow.r / 3.5;
++    color.g += yellow.g / 3.5;
++    color.a += yellow.a / 7.0;
++    
++    half4 green = content.eval(refractedCoord);
++    color.g += green.g / 3.5;
++    color.a += green.a / 7.0;
++    
++    half4 cyan = content.eval(refractedCoord - dispersedCoord * (1.0 / 3.0));
++    color.g += cyan.g / 3.5;
++    color.b += cyan.b / 3.0;
++    color.a += cyan.a / 7.0;
++    
++    half4 blue = content.eval(refractedCoord - dispersedCoord * (2.0 / 3.0));
++    color.b += blue.b / 3.0;
++    color.a += blue.a / 7.0;
++    
++    half4 purple = content.eval(refractedCoord - dispersedCoord);
++    color.r += purple.r / 7.0;
++    color.b += purple.b / 3.0;
++    color.a += purple.a / 7.0;
++    
++    return color;
++}"""
++
++const val DefaultHighlightShaderString = """
++uniform float2 size;
++uniform float4 cornerRadii;
++layout(color) uniform half4 color;
++uniform float angle;
++uniform float falloff;
++
++$RoundedRectSDF
++
++half4 main(float2 coord) {
++    float2 halfSize = size * 0.5;
++    float2 centeredCoord = coord - halfSize;
++    float radius = radiusAt(coord, cornerRadii);
++    
++    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
++    float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
++    float2 normal = float2(cos(angle), sin(angle));
++    float d = dot(grad, normal);
++    float intensity = pow(abs(d), falloff);
++    return color * intensity;
++}"""
++
++const val AmbientHighlightShaderString = """
++uniform float2 size;
++uniform float4 cornerRadii;
++uniform float angle;
++uniform float falloff;
++
++$RoundedRectSDF
++
++half4 main(float2 coord) {
++    float2 halfSize = size * 0.5;
++    float2 centeredCoord = coord - halfSize;
++    float radius = radiusAt(coord, cornerRadii);
++    
++    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
++    float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
++    float2 normal = float2(cos(angle), sin(angle));
++    float d = dot(grad, normal);
++    float intensity = pow(abs(d), falloff);
++    float t = step(0.0, d);
++    return half4(t, t, t, 1.0) * intensity;
++}"""
+
+--- a/base/immersive/src/commonMain/kotlin/com/music/spotui/ui/immersive/shell/backdrop/internal/ShapeProvider.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/base/immersive/src/commonMain/kotlin/com/music/spotui/ui/immersive/shell/backdrop/internal/ShapeProvider.kt	2026-11-21 10:11:54.180277877 +0000
+@@ -0,0 +1,56 @@
++/*
++ * Vendored from Kyant0/backdrop v2.0.0 (io.github.kyant0:backdrop)
++ * https://github.com/Kyant0/backdrop — Copyright 2025 Kyant0, Apache License 2.0
++ *
++ * Vendored so the library ships as source with this app (binary AARs compiled
++ * against older Compose broke at runtime) and to add a backdrop resolution
++ * scale for cheaper effect rendering. KMP expect/actual declarations were
++ * merged into this single Android source set. Package renamed accordingly.
++ * Myspoti copy taken from BitChord's vendored tree (github.com/kushagrasinghx/BitChord,
++ * app/src/main/java/com/music/bitchord/ui/components/backdrop at edc1e6f), which adds
++ * backdropScale and exportedBackdrop to drawBackdrop. Package renamed again for Myspoti.
++ */
++package com.music.spotui.ui.immersive.shell.backdrop.internal
++
++import androidx.compose.runtime.Immutable
++import androidx.compose.ui.geometry.Size
++import androidx.compose.ui.graphics.Outline
++import androidx.compose.ui.graphics.Shape
++import androidx.compose.ui.unit.Density
++import androidx.compose.ui.unit.LayoutDirection
++
++@Immutable
++class ShapeProvider(val shapeBlock: () -> Shape) {
++
++    private var _shape: Shape? = null
++    private var _outline: Outline? = null
++    private var _size: Size = Size.Unspecified
++    private var _layoutDirection: LayoutDirection? = null
++    private var _density: Float? = null
++
++    val innerShape
++        get() = shapeBlock()
++
++    val shape = object : Shape {
++
++        override fun createOutline(
++            size: Size,
++            layoutDirection: LayoutDirection,
++            density: Density
++        ): Outline {
++            val shape = shapeBlock()
++            if (_shape != shape) {
++                _shape = shape
++                _outline = null
++            }
++            if (_outline == null || _size != size || _layoutDirection != layoutDirection || _density != density.density) {
++                _size = size
++                _layoutDirection = layoutDirection
++                _density = density.density
++                _outline = shape.createOutline(size, layoutDirection, density)
++            }
++
++            return _outline!!
++        }
++    }
++}
+
+--- a/base/settings.gradle.kts	2026-11-20 18:14:20.000000000 +0000
++++ b/base/settings.gradle.kts	2026-11-21 10:11:44.737264332 +0000
+@@ -38,3 +38,5 @@
+ include(":wear")
+ include(":pass")
+ include(":desktop")
++// Shared Immersive UI (Android + desktop). See ../DESKTOP.md.
++include(":immersive")
+
+--- a/tools/desktop-port/portability.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tools/desktop-port/portability.py	2026-11-21 10:11:04.402679046 +0000
+@@ -0,0 +1,68 @@
++#!/usr/bin/env python3
++"""
++Portability report for the Immersive UI -> shared KMP module (:immersive). See DESKTOP.md.
++
++  python3 tools/desktop-port/portability.py            # report on what is still in :app
++  python3 tools/desktop-port/portability.py --movable  # only the files that can move right now
++
++"Movable" = under ui/immersive/ in :app, no Android / app-layer imports, and every file it
++references (same package needs no import in Kotlin, so references are matched by identifier)
++is also movable or already moved. It is a greatest fixed point, and deliberately pessimistic:
++identifier matching over-links (a shared name such as `Blur` links two files that are unrelated),
++so a file reported as blocked may be fine; check by hand before giving up on it.
++Static analysis only: nothing here proves a file compiles in commonMain.
++"""
++import os, re, sys, collections
++HERE = os.path.dirname(os.path.abspath(__file__))
++BASE = os.path.normpath(os.path.join(HERE, '..', '..', 'base'))
++ROOT = os.path.join(BASE, 'app/src/main/java')
++IM = '/ui/immersive/'
++HARD = re.compile(r'^(android\.|androidx\.(core|media3|webkit|activity|work|appcompat|palette|navigation|lifecycle)|app\.myspoti\.|com\.bumptech|java\.|javax\.|org\.intellij)')
++APPL = re.compile(r'^com\.music\.spotui\.(?!ui\.immersive)')
++DECL = re.compile(r'^\s*(?:(?:public|private|internal|protected|data|sealed|enum|abstract|open|inline|value|annotation|const|lateinit|override|suspend|operator|infix|tailrec|expect|actual)\s+)*(?:class|object|interface|fun|val|var|typealias)\s+(?:<[^>]*>\s*)?(?:[A-Za-z0-9_.<>?, ]+\.)?`?([A-Za-z_][A-Za-z0-9_]*)', re.M)
++ID = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
++
++info, byname = {}, collections.defaultdict(set)
++for dp, _, fs in os.walk(ROOT):
++    for f in fs:
++        if not f.endswith('.kt'): continue
++        p = os.path.join(dp, f); s = open(p, encoding='utf-8', errors='ignore').read()
++        pkg = (re.search(r'^package\s+([\w.]+)', s, re.M) or [None, ''])[1]
++        info[p] = dict(pkg=pkg, src=s, imps=re.findall(r'^import\s+([\w.*]+)', s, re.M), names=set(DECL.findall(s)))
++        for n in info[p]['names']: byname[(pkg, n)].add(p)
++
++def deps(p):
++    d, out, ids = info[p], set(), set(ID.findall(info[p]['src']))
++    for i in d['imps']:
++        if not i.startswith(('com.music.spotui', 'app.myspoti')): continue
++        if i.endswith('.*'):
++            for n in ids: out |= byname.get((i[:-2], n), set())
++        else:
++            pk, _, n = i.rpartition('.'); out |= byname.get((pk, n), set())
++            pk2, _, o = pk.rpartition('.'); out |= byname.get((pk2, o), set())
++    for n in ids: out |= byname.get((d['pkg'], n), set())
++    out.discard(p); return out
++
++def blockers(p): return [i for i in info[p]['imps'] if HARD.match(i) or APPL.match(i)]
++lines = lambda p: info[p]['src'].count('\n') + 1
++rel = lambda p: os.path.relpath(p, ROOT + '/com/music/spotui')
++
++imm = [p for p in info if IM in p]
++cand = {p for p in imm if not blockers(p)}
++changed = True
++while changed:
++    changed = False
++    for p in list(cand):
++        if any(d not in cand for d in deps(p)): cand.discard(p); changed = True
++
++print(f"Immersive files still in :app: {len(imm)} ({sum(map(lines, imm))} lines)")
++print(f"Movable right now: {len(cand)} files ({sum(map(lines, cand))} lines)")
++for p in sorted(cand): print(f"  {lines(p):5} {rel(p)}")
++if '--movable' in sys.argv: sys.exit()
++
++print("\nMost common direct blockers (count of files):")
++c = collections.Counter(b for p in imm for b in set(blockers(p)))
++for b, n in c.most_common(40): print(f"  {n:3} {b}")
++print("\nFiles by number of direct blockers (fewest first; the cheapest to unlock):")
++for p in sorted(imm, key=lambda p: len(blockers(p)))[:40]:
++    print(f"  {len(blockers(p)):3} blockers  {lines(p):5} lines  {rel(p)}")

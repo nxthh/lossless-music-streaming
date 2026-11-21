@@ -24,6 +24,8 @@ class MyspotiApplication : Application() {
         // A crash or a freeze of the last run, back in this run's diagnostic report.
         app.myspoti.host.android.LastExit.install(this)
         app.myspoti.power.EnergySettings.init(this)
+        com.music.spotui.ui.immersive.ImmersiveAppearanceHost.current = com.music.spotui.ui.look.AppImmersiveAppearance
+        com.music.spotui.ui.immersive.ImmersiveLog.sink = { app.myspoti.host.android.Logbook.log(it) }
         // Spotify session (hidden Web Player + API), caches, downloads, data saver.
         Graph.init(this)
         SongPlayer.attachEngine(Graph.currentSongState)

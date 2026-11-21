@@ -62,6 +62,8 @@ junit-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
+# A Kotlin Multiplatform module with an Android target (AGP 9): :immersive.
+android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 # The native playback core (:engine): commonMain code, a jvm() target for now.
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }

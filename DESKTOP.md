@@ -138,8 +138,10 @@ Re-measure any time: `python3 tools/desktop-port/portability.py` (add `--movable
 | Milestone | State |
 |---|---|
 | Analysis, `tools/desktop-port/portability.py`, this file | done |
-| M0 scaffold + first files | **written, UNVERIFIED (no compiler).** `:immersive` module created and wired (`settings`, `libs.versions.toml`, root `build.gradle.kts`, `:app` dependency). Moved to `immersive/src/commonMain/...` (same packages): `shell/backdrop/internal/{InverseLayerScope,LayerRecorder,Outline,Shaders,ShapeProvider}.kt`, `internal` made public (the other glass files still in `:app` use them), `@Language` dropped from `Shaders.kt`. Not yet done: `:desktop` does not depend on `:immersive` yet. |
-| M1 ... M7 | not started |
+| M0 scaffold + first files | **`:immersive:compileKotlinDesktop` GREEN (2026-11-21, patch applied from orpheon-immersive-m0.patch). Android side `:app:compileDebugKotlin` still UNVERIFIED: no Android SDK on this machine.** Originally written without a compiler. `:immersive` module created and wired (`settings`, `libs.versions.toml`, root `build.gradle.kts`, `:app` dependency). Moved to `immersive/src/commonMain/...` (same packages): `shell/backdrop/internal/{InverseLayerScope,LayerRecorder,Outline,Shaders,ShapeProvider}.kt`, `internal` made public (the other glass files still in `:app` use them), `@Language` dropped from `Shaders.kt`. Not yet done: `:desktop` does not depend on `:immersive` yet. |
+| M1 Foundation | **partly done, desktop-verified only.** `ImmersiveTheme.kt` moved; its host-specific inputs (page/raised/accent colours, fonts, Liquid Glass switch) now come from `ImmersiveAppearance` (`ImmersiveAppearanceHost.current`, set in `MyspotiApplication`; `:app` impl = `ui/look/AppImmersiveAppearance.kt`). `rememberReduceMotion`/`LocalReduceMotion` moved (expect/actual). `ImmersiveMotion` moved; its nav `Pages` split out to `:app` as `ImmersivePages`. Still in :app: `WindowSize`, `secondaryClick`, `ImmersiveClickable`. |
+| M2 Glass cluster | **done for the desktop target** (`:immersive:compileKotlinDesktop` green): all of `shell/backdrop/**`, `ImmersiveGlass`, `ImmersiveHaze`, `FloatingTabBar`, `GlassSelectionPill` are in `:immersive` (Haze 1.3.1 added). Android-only calls sit in `androidMain` actuals (`Platform`, `RuntimeShader`, `internal/RenderEffect`, `internal/Paint`, `uptimeMillis`); desktop actuals report no RenderEffect/RuntimeShader so desktop draws the Haze frost. Logging goes through `ImmersiveLog.sink` (set in `MyspotiApplication`). **Android verified 2026-11-21:** `:app:compileDebugKotlin` green (needed the top-level `internal` of the four moved shell files made public); `:app:testDebugUnitTest` 814 tests, 2 failed (`RadioFavoritesStoreTest`, file-store tests, not touched by this work; likely Windows-specific, not checked against a clean tree). |
+| M3 ... M7 | not started |
 
 ## Next action
 
@@ -167,6 +169,8 @@ Re-measure any time: `python3 tools/desktop-port/portability.py` (add `--movable
 
 ## Log (newest first; add one line per session)
 
+- 2026-11-21 (later): M1 partly + M2 done on the desktop target; `portability.py` fixed for Windows paths. Android compile verified afterwards (see M2). In the shell that runs Gradle, ANDROID_HOME must be set (a new terminal picks it up). 64 Immersive files / 20.0k lines remain in :app. Next: Android compile, then rest of M1 (`WindowSize`, `secondaryClick`, `ImmersiveClickable`), then M3 (strings, cover images).
+- 2026-11-21: applied orpheon-immersive-m0.patch (it was missing from the repo); `:immersive:compileKotlinDesktop` passes (Java 25, Gradle 9.8.2). `:app:compileDebugKotlin` blocked: no Android SDK (set ANDROID_HOME or base/local.properties sdk.dir). Next: verify Android, then M1.
 - 2026-11-21: analysis, plan, M0 written (no compiler available in that session). See STATUS above.
 
 ## Things learned the hard way (add yours)
