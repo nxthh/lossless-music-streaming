@@ -72,7 +72,7 @@ dependencies {
 
     // Screenshots of the watch screen on the computer (WatchScreenshotTest): Robolectric draws them, Roborazzi saves them.
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("org.robolectric:robolectric:4.18.1")
     testImplementation("io.github.takahirom.roborazzi:roborazzi:1.40.1")
     testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.40.1")
     testImplementation(platform(libs.compose.bom))
