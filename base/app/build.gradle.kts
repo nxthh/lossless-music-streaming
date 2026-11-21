@@ -202,7 +202,7 @@ dependencies {
     implementation("com.github.bumptech.glide:compose:1.0.0-beta10")
     // Used directly (Glide, GlideUrl, the disk cache...): beta10 only brings it at runtime.
     implementation("com.github.bumptech.glide:glide:5.0.9")
-    implementation("androidx.palette:palette-ktx:1.0.0")
+    implementation("androidx.palette:palette-ktx:1.1.0")
     // Frosted (blurred) bars of the Immersive look. Apache-2.0.
     implementation("dev.chrisbanes.haze:haze:1.3.1")
     implementation("androidx.compose.material:material-icons-extended:1.7.8")
