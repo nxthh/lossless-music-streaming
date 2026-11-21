@@ -204,7 +204,7 @@ dependencies {
     implementation("com.github.bumptech.glide:glide:5.0.9")
     implementation("androidx.palette:palette-ktx:1.0.0")
     // Frosted (blurred) bars of the Immersive look. Apache-2.0.
-    implementation("dev.chrisbanes.haze:haze:1.3.1")
+    implementation("dev.chrisbanes.haze:haze:2.1.0")
     implementation("androidx.compose.material:material-icons-extended:1.7.8")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     // Awaiting the watch link's tasks (Data Layer channels).
